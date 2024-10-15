@@ -10,3 +10,4 @@ huggingface_hub
 transformers[sentencepiece]
 timm>=1.0.7
 fsspec
+opencv-python

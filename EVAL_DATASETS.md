@@ -41,7 +41,7 @@ $path_to_dci_dataset/
 
 Step 1. Download [dci.tar.gz](https://dl.fbaipublicfiles.com/densely_captioned_images/dci.tar.gz) and unzip the file in path_to_dci_dataset/densely_captioned_images 
 
-Step 2. Download the archive sa_000138.tar and extract the images in the photos folder.
+Step 2. Download the archive sa_000138.tar and extract the images to the path_to_dci_dataset/densely_captioned_images/photos folder.
 
 
 
