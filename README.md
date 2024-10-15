@@ -85,7 +85,7 @@ python -m training.main \
 }
 ```
 
-## ❤️ Acknowlegement
+## ❤️ Acknowledgements
 
 Our code is built on top of [open_clip](https://github.com/mlfoundations/open_clip). Thanks for their nice work!
 
