@@ -7,7 +7,6 @@
 
 ## 📬 News
 
-
 - [2024/10/13] Upload long text-image retrieval evaluation for CLIP.
 - [2024/09/26] 🎉 LoTLIP is accepted by NeurIPS 2024!
 
@@ -62,7 +61,7 @@ Coming Soon
 
  ### Evaluation Results
 
-| Model |Pre-training Data Scale   | DCI  T2I | DCI I2T| IIW T2I |IIW I2T| SV-10k T2I | SV-10k I2T |
+| Model |Pre-training Data Scale   | DCI I2T | DCI T2I| IIW I2T |IIW T2I| SV-10k I2T | SV-10k T2I |
 |  :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
 | [CLIP-ViT-B-32](https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt) |  400M | 43.06 | 40.32 | 86.76 | 84.15 | 58.08 | 51.77|
 | [LoTLIP-ViT-B-32]() |  100M | *59.90* | *56.36* | *93.14*| *91.83* | *83.76* | *78.97*|
