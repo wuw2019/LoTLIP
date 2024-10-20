@@ -3,14 +3,23 @@
 Wraps timm (https://github.com/rwightman/pytorch-image-models) models for use as a vision tower in CLIP model.
 """
 import logging
+import math
+from functools import partial, reduce
 from collections import OrderedDict
+import os
 
 import torch
 import torch.nn as nn
 
+from timm.models.vision_transformer import VisionTransformer, _cfg
+from timm.layers.helpers import to_2tuple
+from timm.models.layers import PatchEmbed
+from operator import mul
+
 try:
     import timm
     from timm.models.layers import Mlp, to_2tuple
+    from timm.models._helpers import load_state_dict, remap_state_dict
     try:
         # old timm imports < 0.8.1
         from timm.models.layers.attention_pool2d import RotAttentionPool2d
@@ -21,8 +30,59 @@ try:
         from timm.layers import AttentionPool2d as AbsAttentionPool2d
 except ImportError:
     timm = None
-
+from typing import Any, Callable, Dict, Optional, Union
 from .utils import freeze_batch_norm_2d
+
+def load_checkpoint(
+        model: torch.nn.Module,
+        checkpoint_path: str,
+        use_ema: bool = True,
+        device: Union[str, torch.device] = 'cpu',
+        strict: bool = False,
+        remap: bool = False,
+        filter_fn: Optional[Callable] = None,
+):
+    if os.path.splitext(checkpoint_path)[-1].lower() in ('.npz', '.npy'):
+        # numpy checkpoint, try to load via model specific load_pretrained fn
+        if hasattr(model, 'load_pretrained'):
+            model.load_pretrained(checkpoint_path)
+        else:
+            raise NotImplementedError('Model cannot load numpy checkpoint')
+        return
+
+    state_dict = load_state_dict(checkpoint_path, use_ema, device=device)
+    if remap:
+        state_dict = remap_state_dict(state_dict, model)
+    elif filter_fn:
+        state_dict = filter_fn(state_dict, model)
+    incompatible_keys = model.load_state_dict(state_dict, strict=strict)
+    return incompatible_keys
+
+def load_moco_checkpoint(
+        model: torch.nn.Module,
+        checkpoint_path: str,
+        use_ema: bool = True,
+        device: Union[str, torch.device] = 'cpu',
+        strict: bool = True,
+        remap: bool = False,
+        filter_fn: Optional[Callable] = None,
+):
+    if os.path.splitext(checkpoint_path)[-1].lower() in ('.npz', '.npy'):
+        # numpy checkpoint, try to load via model specific load_pretrained fn
+        if hasattr(model, 'load_pretrained'):
+            model.load_pretrained(checkpoint_path)
+        else:
+            raise NotImplementedError('Model cannot load numpy checkpoint')
+        return
+
+    state_dict = load_state_dict(checkpoint_path, use_ema, device=device)
+    base_encoder_state_dict = {}
+    for k, v in state_dict.items():
+        if 'base_encoder' in k and 'base_encoder.head' not in k:
+            base_encoder_state_dict[k[len("base_encoder."):]] = v
+    
+    incompatible_keys = model.load_state_dict(base_encoder_state_dict, strict=strict)
+    return incompatible_keys
 
 
 class TimmModel(nn.Module):
@@ -41,6 +101,8 @@ class TimmModel(nn.Module):
             drop_path=None,
             patch_drop=None,
             pretrained=False,
+            checkpoint_path='',
+            cache_dir=""
     ):
         super().__init__()
         if timm is None:
@@ -87,7 +149,10 @@ class TimmModel(nn.Module):
                 reset_kwargs = dict(global_pool=pool) if pool else {}
                 self.trunk.reset_classifier(0, **reset_kwargs)
             prev_chs = self.trunk.num_features
-
+        
+        if checkpoint_path!='':
+            incompatible_keys = load_checkpoint(self.trunk, os.path.join(cache_dir,model_name,checkpoint_path))
+            print(incompatible_keys)
         head_layers = OrderedDict()
 
         # Add custom pooling to head

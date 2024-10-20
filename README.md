@@ -7,7 +7,7 @@
 
 ## 📬 News
 
-
+- [2024/10/20] Upload LoTLIP checkpoints and evaluation code for LoTLIP.
 - [2024/10/13] Upload long text-image retrieval evaluation for CLIP.
 - [2024/09/26] 🎉 LoTLIP is accepted by NeurIPS 2024!
 
@@ -32,15 +32,21 @@ make install-training
 make install-test
 ```
 
-## 💾 Pre-trained Checkpoints
-
-- [ ] LoTLIP-100M-ViT-B-16
-- [ ] LoTLIP-100M-ViT-B-32
 
 ## 🗒 Long Text-Image Retrieval
 
 ### Data Preparation
 Preparing Datasets for long text-image retrieval following [EVAL_DATASETS.md](EVAL_DATASETS.md)
+
+## 💾 Pre-trained Weights Preparation
+Please download pre-trained weights of [BERT](https://huggingface.co/google-bert/bert-base-uncased), [ViT-B-16-in21k](https://huggingface.co/timm/vit_base_patch16_224.augreg_in21k), and [ViT-B-32-in21k](https://huggingface.co/timm/vit_base_patch32_224.augreg_in21k) to cache-dir.
+
+```
+$cache-dir/
+|–– vit_base_patch16_224.augreg_in21k/
+|–– vit_base_patch32_224.augreg_in21k/
+|–– bert-base-uncased/
+```
 
 ### How to evaluate
 - Evaluate CLIP-ViT-B-16 from openai (pretrained on 400M scale dataset):
@@ -55,29 +61,39 @@ python -m training.main \
     --pretrained 'openai'
 ```
 
-- Evaluate ViT-B-16 from LoTLIP on 100M:
+- Evaluate LoTLIP-ViT-B-16 (pretrained on 100M scale dataset):
+
+Download [LoTLIP-ViT-B-16](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-16-100M) to path_to_lotlip_checkpoints/
+
+Note: If you built the environment before 2024/10/20, please run **pip install transformers==4.39.3** before evaluation. 
+
 ```
-Coming Soon
+python -m training.main \
+    --share4v-retrieval $path_to_SA-1B_dataset$ \
+    --share4v-anno dataloaders/share4v/share4v_sam_10k.json \
+    --share4v_val_num 1000,10000 \
+    --dci-retrieval $path_to_dci_dataset$ \
+    --iiw-retrieval $path_to_iiw_dataset$ \
+    --cache-dir $cache-dir$ \
+    --model lotlip_bert-ViT-B-16 \
+    --pretrained $path_to_lotlip_checkpoints$/model.pt
 ```
 
  ### Evaluation Results
 
-| Model |Pre-training Data Scale   | DCI  T2I | DCI I2T| IIW T2I |IIW I2T| SV-10k T2I | SV-10k I2T |
+| Model |Pre-training Data Scale   | DCI I2T | DCI T2I| IIW I2T |IIW T2I| SV-10k I2T | SV-10k T2I |
 |  :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
 | [CLIP-ViT-B-32](https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt) |  400M | 43.06 | 40.32 | 86.76 | 84.15 | 58.08 | 51.77|
-| [LoTLIP-ViT-B-32]() |  100M | *59.90* | *56.36* | *93.14*| *91.83* | *83.76* | *78.97*|
+| [LoTLIP-ViT-B-32](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-32-100M) |  100M | *59.90* | *56.36* | *93.14*| *91.83* | *83.76* | *78.97*|
 | [CLIP-ViT-B-16](https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt) |  400M | 45.45 | 43.01 | 88.24 |87.58 |60.22|56.16 |
-| [LoTLIP-ViT-B-16]() |  100M | *64.11*| *62.63*| *94.28* | *92.65*| *88.40* | *82.72* |
-
-
-## 🔥 Training (Coming Soon) 
+| [LoTLIP-ViT-B-16](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-16-100M) |  100M | *64.11*| *62.63*| *94.28* | *92.65*| *88.40* | *82.72* |
 
 
 ## 🔷 Bibtex
 
 
 ```bibtex
-@inproceedings{LotLIP,
+@inproceedings{LoTLIP,
   title={LoTLIP: Improving Language-Image Pre-training for Long Text Understanding},
   author={Wu, Wei and Zheng, Kecheng and Ma, Shuailei and Lu, Fan and Guo, Yuxin and Zhang, Yifei and Chen, Wei and Guo, Qingpei and Shen, Yujun and Zheng-Jun, Zha},
   booktitle={arXiv},

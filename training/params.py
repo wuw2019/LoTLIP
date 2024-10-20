@@ -31,6 +31,14 @@ def parse_args(args):
         default=None,
         help="Path to file(s) with training data. When using webdataset, multiple datasources can be combined using the `::` separator.",
     )
+
+    parser.add_argument(
+        "--train-data-cluster",
+        type=str,
+        default=None,
+        help="Path to file(s) with cluster info of training data.multiple datasources can be combined using the `::` separator.",
+    )
+
     parser.add_argument(
         "--train-data-upsampling-factors",
         type=str,
@@ -40,6 +48,36 @@ def parse_args(args):
             "Similar to --train-data, this should be a string with as many numbers as there are data sources, separated by `::` (e.g. 1::2::0.5) "
             "By default, datapoints are sampled uniformly regardless of the dataset sizes."
         )
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="~/.cache/",
+        help="Where to store files cache_dir.",
+    )
+    parser.add_argument(
+        "--root_filename",
+        type=str,
+        default='./datasets',
+        help="Where to store data.",
+    )
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=0,
+        help="torch distributed needed.",
+    )
+    parser.add_argument(
+        "--clip_lossweight",
+        type=float,
+        default=1.0,
+        help="",
+    )
+    parser.add_argument(
+        "--declip_lossweight",
+        type=float,
+        default=1.0,
+        help="",
     )
     parser.add_argument(
         "--val-data",
@@ -64,6 +102,18 @@ def parse_args(args):
         choices=["webdataset", "csv", "synthetic", "auto"],
         default="auto",
         help="Which type of dataset to process."
+    )
+    parser.add_argument(
+        "--use_longcap",
+        default=False,
+        action="store_true",
+        help="Whether to use longcapion file to parse csv data."
+    )
+    parser.add_argument(
+        "--use_declip_loss",
+        default=False,
+        action="store_true",
+        help="Whether to use declip loss to train model."
     )
     parser.add_argument(
         "--dataset-resampled",

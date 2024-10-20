@@ -1,6 +1,6 @@
 from collections import OrderedDict
 import math
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Optional, Sequence, Tuple
 from functools import partial
 
 import torch
@@ -89,15 +89,14 @@ class PatchDropout(nn.Module):
 class Attention(nn.Module):
     def __init__(
             self,
-            dim: int,
-            num_heads: int = 8,
-            qkv_bias: bool = True,
-            scaled_cosine: bool = False,
-            scale_heads: bool = False,
-            logit_scale_max: float = math.log(1. / 0.01),
-            batch_first: bool = True,
-            attn_drop: float = 0.,
-            proj_drop: float = 0.
+            dim,
+            num_heads=8,
+            qkv_bias=True,
+            scaled_cosine=False,
+            scale_heads=False,
+            logit_scale_max=math.log(1. / 0.01),
+            attn_drop=0.,
+            proj_drop=0.
     ):
         super().__init__()
         self.scaled_cosine = scaled_cosine
@@ -107,8 +106,6 @@ class Attention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
         self.logit_scale_max = logit_scale_max
-        self.batch_first = batch_first
-        self.use_fsdpa = hasattr(nn.functional, 'scaled_dot_product_attention')
 
         # keeping in_proj in this form (instead of nn.Linear) to match weight scheme of original
         self.in_proj_weight = nn.Parameter(torch.randn((dim * 3, dim)) * self.scale)
@@ -130,55 +127,36 @@ class Attention(nn.Module):
         self.out_drop = nn.Dropout(proj_drop)
 
     def forward(self, x, attn_mask: Optional[torch.Tensor] = None):
-        if self.batch_first:
-            x = x.transpose(0, 1)
-
         L, N, C = x.shape
         q, k, v = F.linear(x, self.in_proj_weight, self.in_proj_bias).chunk(3, dim=-1)
-        q = q.reshape(L, N * self.num_heads, -1).transpose(0, 1)
-        k = k.reshape(L, N * self.num_heads, -1).transpose(0, 1)
-        v = v.reshape(L, N * self.num_heads, -1).transpose(0, 1)
-
-        if attn_mask is not None and attn_mask.dtype == torch.bool:
-            new_attn_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
-            new_attn_mask.masked_fill_(attn_mask, float("-inf"))
-            attn_mask = new_attn_mask
+        q = q.contiguous().view(L, N * self.num_heads, -1).transpose(0, 1)
+        k = k.contiguous().view(L, N * self.num_heads, -1).transpose(0, 1)
+        v = v.contiguous().view(L, N * self.num_heads, -1).transpose(0, 1)
 
         if self.logit_scale is not None:
             attn = torch.bmm(F.normalize(q, dim=-1), F.normalize(k, dim=-1).transpose(-1, -2))
             logit_scale = torch.clamp(self.logit_scale, max=self.logit_scale_max).exp()
             attn = attn.view(N, self.num_heads, L, L) * logit_scale
             attn = attn.view(-1, L, L)
-            if attn_mask is not None:
-                attn = attn + attn_mask
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = torch.bmm(attn, v)
         else:
-            if self.use_fsdpa:
-                x = F.scaled_dot_product_attention(
-                    q, k, v,
-                    attn_mask=attn_mask,
-                    dropout_p=self.attn_drop.p if self.training else 0.,
-                )
-            else:
-                q = q * self.scale
-                attn = torch.bmm(q, k.transpose(-1, -2))
-                if attn_mask is not None:
-                    attn += attn_mask
-                attn = attn.softmax(dim=-1)
-                attn = self.attn_drop(attn)
-                x = torch.bmm(attn, v)
+            q = q * self.scale
+            attn = torch.bmm(q, k.transpose(-1, -2))
 
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                new_attn_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
+                new_attn_mask.masked_fill_(attn_mask, float("-inf"))
+                attn_mask = new_attn_mask
+            attn += attn_mask
+
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = torch.bmm(attn, v)
         if self.head_scale is not None:
             x = x.view(N, self.num_heads, L, C) * self.head_scale
             x = x.view(-1, L, C)
-
         x = x.transpose(0, 1).reshape(L, N, C)
-
-        if self.batch_first:
-            x = x.transpose(0, 1)
-
         x = self.out_proj(x)
         x = self.out_drop(x)
         return x
@@ -191,20 +169,20 @@ class AttentionalPooler(nn.Module):
             context_dim: int,
             n_head: int = 8,
             n_queries: int = 256,
-            norm_layer: Callable = LayerNorm,
+            norm_layer: Callable = LayerNorm
     ):
         super().__init__()
         self.query = nn.Parameter(torch.randn(n_queries, d_model))
-        self.attn = nn.MultiheadAttention(d_model, n_head, kdim=context_dim, vdim=context_dim, batch_first=True)
+        self.attn = nn.MultiheadAttention(d_model, n_head, kdim=context_dim, vdim=context_dim)
         self.ln_q = norm_layer(d_model)
         self.ln_k = norm_layer(context_dim)
 
     def forward(self, x: torch.Tensor):
-        N = x.shape[0]
-        x = self.ln_k(x)
+        x = self.ln_k(x).permute(1, 0, 2)  # NLD -> LND
+        N = x.shape[1]
         q = self.ln_q(self.query)
-        out = self.attn(q.unsqueeze(0).expand(N, -1, -1), x, x, need_weights=False)[0]
-        return out
+        out = self.attn(q.unsqueeze(1).expand(-1, N, -1), x, x, need_weights=False)[0]
+        return out.permute(1, 0, 2)  # LND -> NLD
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -217,12 +195,11 @@ class ResidualAttentionBlock(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = LayerNorm,
             is_cross_attention: bool = False,
-            batch_first: bool = True,
     ):
         super().__init__()
 
         self.ln_1 = norm_layer(d_model)
-        self.attn = nn.MultiheadAttention(d_model, n_head, batch_first=batch_first)
+        self.attn = nn.MultiheadAttention(d_model, n_head)
         self.ls_1 = LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
         if is_cross_attention:
             self.ln_1_kv = norm_layer(d_model)
@@ -260,6 +237,7 @@ class ResidualAttentionBlock(nn.Module):
     ):
         k_x = self.ln_1_kv(k_x) if hasattr(self, "ln_1_kv") and k_x is not None else None
         v_x = self.ln_1_kv(v_x) if hasattr(self, "ln_1_kv") and v_x is not None else None
+
         x = q_x + self.ls_1(self.attention(q_x=self.ln_1(q_x), k_x=k_x, v_x=v_x, attn_mask=attn_mask))
         x = x + self.ls_2(self.mlp(self.ln_2(x)))
         return x
@@ -278,17 +256,14 @@ class CustomResidualAttentionBlock(nn.Module):
             scale_heads: bool = False,
             scale_attn: bool = False,
             scale_fc: bool = False,
-            batch_first: bool = True,
     ):
         super().__init__()
 
         self.ln_1 = norm_layer(d_model)
         self.attn = Attention(
-            d_model,
-            n_head,
+            d_model, n_head,
             scaled_cosine=scale_cosine_attn,
             scale_heads=scale_heads,
-            batch_first=batch_first,
         )
         self.ln_attn = norm_layer(d_model) if scale_attn else nn.Identity()
         self.ls_1 = LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
@@ -303,9 +278,6 @@ class CustomResidualAttentionBlock(nn.Module):
         ]))
         self.ls_2 = LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
 
-    def get_reference_weight(self):
-        return self.mlp.c_fc.weight
-
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         x = x + self.ls_1(self.ln_attn(self.attn(self.ln_1(x), attn_mask=attn_mask)))
         x = x + self.ls_2(self.mlp(self.ln_2(x)))
@@ -313,7 +285,12 @@ class CustomResidualAttentionBlock(nn.Module):
 
 
 def _expand_token(token, batch_size: int):
-    return token.view(1, 1, -1).expand(batch_size, -1, -1)
+    if len(token.shape) == 1:
+        # token: [d]
+        return token.view(1, 1, -1).expand(batch_size, -1, -1)
+    elif len(token.shape) == 2:
+         # token: [c, d]
+        return token.view(1, token.shape[0], token.shape[-1]).expand(batch_size, -1, -1)
 
 
 class Transformer(nn.Module):
@@ -326,24 +303,15 @@ class Transformer(nn.Module):
             ls_init_value: float = None,
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = LayerNorm,
-            batch_first: bool = True,
     ):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.batch_first = batch_first
         self.grad_checkpointing = False
 
         self.resblocks = nn.ModuleList([
             ResidualAttentionBlock(
-                width,
-                heads,
-                mlp_ratio,
-                ls_init_value=ls_init_value,
-                act_layer=act_layer,
-                norm_layer=norm_layer,
-                batch_first=batch_first,
-            )
+                width, heads, mlp_ratio, ls_init_value=ls_init_value, act_layer=act_layer, norm_layer=norm_layer)
             for _ in range(layers)
         ])
 
@@ -353,81 +321,12 @@ class Transformer(nn.Module):
         return self.resblocks[0].mlp.c_fc.weight.dtype
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        if not self.batch_first:
-            x = x.transpose(0, 1).contiguous()    # NLD -> LND
         for r in self.resblocks:
             if self.grad_checkpointing and not torch.jit.is_scripting():
                 # TODO: handle kwargs https://github.com/pytorch/pytorch/issues/79887#issuecomment-1161758372
                 x = checkpoint(r, x, None, None, attn_mask)
             else:
                 x = r(x, attn_mask=attn_mask)
-        if not self.batch_first:
-            x = x.transpose(0, 1)    # LND -> NLD
-        return x
-
-
-class CustomTransformer(nn.Module):
-    """ A custom transformer that can use different block types. """
-    def __init__(
-            self,
-            width: int,
-            layers: int,
-            heads: int,
-            mlp_ratio: float = 4.0,
-            ls_init_value: float = None,
-            act_layer: Callable = nn.GELU,
-            norm_layer: Callable = LayerNorm,
-            batch_first: bool = True,
-            block_types: Union[str, List[str]] = 'CustomResidualAttentionBlock',
-    ):
-        super().__init__()
-        self.width = width
-        self.layers = layers
-        self.batch_first = batch_first  # run trasnformer stack in batch first (N, L, D)
-        self.grad_checkpointing = False
-
-        if isinstance(block_types, str):
-            block_types = [block_types] * layers
-        assert len(block_types) == layers
-
-        def _create_block(bt: str):
-            if bt == 'CustomResidualAttentionBlock':
-                return CustomResidualAttentionBlock(
-                    width,
-                    heads,
-                    mlp_ratio=mlp_ratio,
-                    ls_init_value=ls_init_value,
-                    act_layer=act_layer,
-                    norm_layer=norm_layer,
-                    batch_first=batch_first,
-                )
-            else:
-                assert False
-
-        self.resblocks = nn.ModuleList([
-            _create_block(bt)
-            for bt in block_types
-        ])
-
-    def get_cast_dtype(self) -> torch.dtype:
-        weight = self.resblocks[0].get_reference_weight()
-        if hasattr(weight, 'int8_original_dtype'):
-            return weight.int8_original_dtype
-        return weight.dtype
-
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        if not self.batch_first:
-            x = x.transpose(0, 1)  # NLD -> LND
-
-        for r in self.resblocks:
-            if self.grad_checkpointing and not torch.jit.is_scripting():
-                # TODO: handle kwargs https://github.com/pytorch/pytorch/issues/79887#issuecomment-1161758372
-                x = checkpoint(r, x, None, None, attn_mask)
-            else:
-                x = r(x, attn_mask=attn_mask)
-
-        if not self.batch_first:
-            x = x.transpose(0, 1)  # NLD -> LND
         return x
 
 
@@ -617,7 +516,10 @@ class VisionTransformer(nn.Module):
 
         x = self.patch_dropout(x)
         x = self.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
 
         if self.attn_pool is not None:
             if self.attn_pool_contrastive is not None:
@@ -650,15 +552,31 @@ class VisionTransformer(nn.Module):
         return pooled
 
 
-def text_global_pool(x, text: Optional[torch.Tensor] = None, pool_type: str = 'argmax'):
+def text_global_pool(x, text: Optional[torch.Tensor] = None, pool_type: str = 'argmax', num_corner_token:int=0):
     if pool_type == 'first':
         pooled, tokens = x[:, 0], x[:, 1:]
+
     elif pool_type == 'last':
-        pooled, tokens = x[:, -1], x[:, :-1]
+
+        if num_corner_token>0:
+            pooled, tokens = x[:, -(num_corner_token+1):], x[:, :-(num_corner_token+1)]
+        else:
+            pooled, tokens = x[:, -1], x[:, :-1]
+
     elif pool_type == 'argmax':
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         assert text is not None
-        pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+        if num_corner_token>0:
+            cls_token = text.argmax(dim=-1)
+            pooled = []
+            for i in range(num_corner_token+1):
+                pooled.append(x[torch.arange(x.shape[0]), cls_token-i])
+            pooled = torch.stack(pooled, dim=1)
+            pooled = pooled.reshape(-1, pooled.shape[-1])
+            tokens = x
+        else:
+            pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+
     else:
         pooled = tokens = x
 
@@ -686,11 +604,13 @@ class TextTransformer(nn.Module):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = LayerNorm,
             output_tokens: bool = False,
+            num_corner_token: int = 0,
     ):
         super().__init__()
         assert pool_type in ('first', 'last', 'argmax', 'none')
         self.output_tokens = output_tokens
         self.num_pos = self.context_length = context_length
+        vocab_size = vocab_size+num_corner_token
         self.vocab_size = vocab_size
         self.width = width
         self.output_dim = output_dim
@@ -700,8 +620,8 @@ class TextTransformer(nn.Module):
 
         self.token_embedding = nn.Embedding(vocab_size, width)
         if embed_cls:
-            self.cls_emb = nn.Parameter(torch.empty(width))
-            self.num_pos += 1
+            self.cls_emb = nn.Parameter(torch.empty(num_corner_token+1, width))
+            self.num_pos += num_corner_token+1
         else:
             self.cls_emb = None
         self.positional_embedding = nn.Parameter(torch.empty(self.num_pos, width))
@@ -727,6 +647,8 @@ class TextTransformer(nn.Module):
             self.text_projection = nn.Parameter(torch.empty(width, output_dim))
 
         self.init_parameters()
+
+        self.num_corner_token = num_corner_token
 
     def init_parameters(self):
         nn.init.normal_(self.token_embedding.weight, std=0.02)
@@ -772,12 +694,38 @@ class TextTransformer(nn.Module):
         additive_mask = torch.repeat_interleave(additive_mask, self.heads, 0)
         return additive_mask
 
+    def build_attn_mask(self, attn_mask, x):
+        
+        if self.num_corner_token == 0:
+            return attn_mask
+            
+        if self.cls_emb is not None:
+            raise ValueError( "current code do to support add extra cls emb in text encoder with corner tokens"
+                )
+        
+        # change the 1d mask to 2d mask [bs, token_num, token_num]
+        attn_mask = attn_mask[None, :, :].repeat(x.shape[0], 1, 1)
+        for i in range(x.shape[0]):
+            cur_input_ids = x[i]
+            cur_mask = attn_mask[i]
+            cls_token_id = x[i].argmax(dim=-1)
+
+            cur_mask[:,cls_token_id-self.num_corner_token: cls_token_id+1].fill_(float("-inf"))
+            for sub_cls_token_id in range(self.num_corner_token+1):
+                cur_mask[cls_token_id-sub_cls_token_id, cls_token_id-sub_cls_token_id] = 0
+            attn_mask[i] = cur_mask
+
+        attn_mask = attn_mask[:,None, :, :].repeat(1,self.heads, 1, 1).reshape(-1, attn_mask.shape[-2],attn_mask.shape[-1])
+        return attn_mask
+       
+ 
+
     def forward(self, text):
         cast_dtype = self.transformer.get_cast_dtype()
         seq_len = text.shape[1]
 
         x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-        attn_mask = self.attn_mask
+        attn_mask = self.build_attn_mask(self.attn_mask, text)
         if self.cls_emb is not None:
             seq_len += 1
             x = torch.cat([x, _expand_token(self.cls_emb, x.shape[0])], dim=1)
@@ -786,16 +734,18 @@ class TextTransformer(nn.Module):
                 attn_mask = attn_mask[None, :seq_len, :seq_len] + cls_mask[:, :seq_len, :seq_len]
 
         x = x + self.positional_embedding[:seq_len].to(cast_dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x, attn_mask=attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
 
         # x.shape = [batch_size, n_ctx, transformer.width]
         if self.cls_emb is not None:
             # presence of appended cls embed (CoCa) overrides pool_type, always take last token
-            pooled, tokens = text_global_pool(x, pool_type='last')
+            pooled, tokens = text_global_pool(x, pool_type=self.pool_type, num_corner_token=self.num_corner_token)
             pooled = self.ln_final(pooled)  # final LN applied after pooling in this case
         else:
             x = self.ln_final(x)
-            pooled, tokens = text_global_pool(x, text, pool_type=self.pool_type)
+            pooled, tokens = text_global_pool(x, text, pool_type=self.pool_type, num_corner_token=self.num_corner_token)
 
         if self.text_projection is not None:
             if isinstance(self.text_projection, nn.Linear):
@@ -821,8 +771,8 @@ class MultimodalTransformer(Transformer):
             act_layer: Callable = nn.GELU,
             norm_layer: Callable = LayerNorm,
             output_dim: int = 512,
-            batch_first: bool = True,
     ):
+
         super().__init__(
             width=width,
             layers=layers,
@@ -831,7 +781,6 @@ class MultimodalTransformer(Transformer):
             ls_init_value=ls_init_value,
             act_layer=act_layer,
             norm_layer=norm_layer,
-            batch_first=batch_first,
         )
         self.context_length = context_length
         self.cross_attn = nn.ModuleList([
@@ -843,7 +792,6 @@ class MultimodalTransformer(Transformer):
                 act_layer=act_layer,
                 norm_layer=norm_layer,
                 is_cross_attention=True,
-                batch_first=batch_first,
             )
             for _ in range(layers)
         ])
@@ -880,10 +828,9 @@ class MultimodalTransformer(Transformer):
         return mask
 
     def forward(self, image_embs, text_embs):
-        seq_len = text_embs.shape[1]
-        if not self.batch_first:
-            image_embs = image_embs.permute(1, 0, 2)  # NLD -> LND
-            text_embs = text_embs.permute(1, 0, 2)  # NLD -> LND
+        text_embs = text_embs.permute(1, 0, 2)  # NLD -> LNDsq
+        image_embs = image_embs.permute(1, 0, 2)  # NLD -> LND
+        seq_len = text_embs.shape[0]
 
         for resblock, cross_attn in zip(self.resblocks, self.cross_attn):
             if self.grad_checkpointing and not torch.jit.is_scripting():
@@ -894,14 +841,13 @@ class MultimodalTransformer(Transformer):
                 text_embs = resblock(text_embs, attn_mask=self.attn_mask[:seq_len, :seq_len])
                 text_embs = cross_attn(text_embs, k_x=image_embs, v_x=image_embs)
 
-        if not self.batch_first:
-            text_embs = text_embs.permute(1, 0, 2)  # LND -> NLD
+        x = text_embs.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x)
 
-        out = self.ln_final(text_embs)
         if self.text_projection is not None:
-            out = out @ self.text_projection
+            x = x @ self.text_projection
 
-        return out
+        return x
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):

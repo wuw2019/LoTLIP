@@ -7,8 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch
 import torchvision.transforms.functional as F
 from torchvision.transforms import Normalize, Compose, RandomResizedCrop, InterpolationMode, ToTensor, Resize, \
-    CenterCrop, ColorJitter, Grayscale
-
+    CenterCrop, ColorJitter, Grayscale, RandomApply, RandomGrayscale, RandomHorizontalFlip
+from PIL import ImageFilter
+from training.random_aug import RandomAugment
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .utils import to_2tuple
 
@@ -21,6 +22,7 @@ class PreprocessCfg:
     std: Tuple[float, ...] = OPENAI_DATASET_STD
     interpolation: str = 'bicubic'
     resize_mode: str = 'shortest'
+    use_timm: bool = False
     fill_color: int = 0
 
     def __post_init__(self):
@@ -35,6 +37,15 @@ class PreprocessCfg:
         return (self.num_channels,) + to_2tuple(self.size)
 
 _PREPROCESS_KEYS = set(asdict(PreprocessCfg()).keys())
+
+class GaussianBlur(object):
+    def __init__(self, sigma=[.1, 2.]):
+        self.sigma = sigma
+
+    def __call__(self, x):
+        sigma = random.uniform(self.sigma[0], self.sigma[1])
+        x = x.filter(ImageFilter.GaussianBlur(radius=sigma))
+        return x
 
 
 def merge_preprocess_dict(
@@ -279,15 +290,9 @@ def image_transform(
         resize_mode: Optional[str] = None,
         interpolation: Optional[str] = None,
         fill_color: int = 0,
+        use_timm: bool=False,
         aug_cfg: Optional[Union[Dict[str, Any], AugmentationCfg]] = None,
 ):
-    mean = mean or OPENAI_DATASET_MEAN
-    if not isinstance(mean, (list, tuple)):
-        mean = (mean,) * 3
-
-    std = std or OPENAI_DATASET_STD
-    if not isinstance(std, (list, tuple)):
-        std = (std,) * 3
 
     interpolation = interpolation or 'bicubic'
     assert interpolation in ['bicubic', 'bilinear', 'random']
@@ -302,11 +307,22 @@ def image_transform(
     else:
         aug_cfg = aug_cfg or AugmentationCfg()
 
-    normalize = Normalize(mean=mean, std=std)
 
+    mean = (mean or OPENAI_DATASET_MEAN) if not use_timm else 0.5
+    if not isinstance(mean, (list, tuple)):
+        mean = (mean,) * 3
+
+    std = (std or OPENAI_DATASET_STD) if not use_timm else 0.5
+    if not isinstance(std, (list, tuple)):
+        std = (std,) * 3
+
+    normalize = Normalize(mean=mean, std=std)
     if is_train:
         aug_cfg_dict = {k: v for k, v in asdict(aug_cfg).items() if v is not None}
-        use_timm = aug_cfg_dict.pop('use_timm', False)
+
+        use_timm = aug_cfg_dict.pop('use_timm', False) or use_timm
+        
+        use_dataaug = aug_cfg_dict.pop('use_dataaug', False)
         if use_timm:
             from timm.data import create_transform  # timm can still be optional
             if isinstance(image_size, (tuple, list)):
@@ -330,6 +346,18 @@ def image_transform(
                 interpolation=interpolation,
                 **aug_cfg_dict,
             )
+        elif use_dataaug:
+            train_transform = Compose([
+                        RandomResizedCrop(image_size, scale=(0.2, 1.0), interpolation=InterpolationMode.BICUBIC),
+                        RandomApply([ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+                        RandomGrayscale(p=0.2),
+                        RandomApply([GaussianBlur([.1, 2.])],p=0.5),
+                        RandomHorizontalFlip(),
+                        RandomAugment(2, 7, isPIL=True, augs=['Identity','AutoContrast','Equalize','Brightness','Sharpness',
+                            'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate']),
+                        ToTensor(),
+                        normalize
+                    ])
         else:
             train_transform = [
                 RandomResizedCrop(
@@ -357,37 +385,54 @@ def image_transform(
                 warnings.warn(f'Unused augmentation cfg items, specify `use_timm` to use ({list(aug_cfg_dict.keys())}).')
         return train_transform
     else:
-        if resize_mode == 'longest':
-            transforms = [
-                ResizeKeepRatio(image_size, interpolation=interpolation_mode, longest=1),
-                CenterCropOrPad(image_size, fill=fill_color)
-            ]
-        elif resize_mode == 'squash':
-            if isinstance(image_size, int):
-                image_size = (image_size, image_size)
-            transforms = [
-                Resize(image_size, interpolation=interpolation_mode),
-            ]
+        if use_timm:
+            from timm.data import create_transform  # timm can still be optional
+            if isinstance(image_size, (tuple, list)):
+                assert len(image_size) >= 2
+                input_size = (3,) + image_size[-2:]
+            else:
+                input_size = (3, image_size, image_size)
+            
+            val_transform = create_transform(input_size,
+                                             mean=mean,
+                                             std=std,
+                                             interpolation=interpolation,
+                                             crop_pct=1.)
+            
+            return val_transform
         else:
-            assert resize_mode == 'shortest'
-            if not isinstance(image_size, (tuple, list)):
-                image_size = (image_size, image_size)
-            if image_size[0] == image_size[1]:
-                # simple case, use torchvision built-in Resize w/ shortest edge mode (scalar size arg)
+            if resize_mode == 'longest':
                 transforms = [
-                    Resize(image_size[0], interpolation=interpolation_mode)
+                    ResizeKeepRatio(image_size, interpolation=interpolation_mode, longest=1),
+                    CenterCropOrPad(image_size, fill=fill_color)
+                ]
+            elif resize_mode == 'squash':
+                if isinstance(image_size, int):
+                    image_size = (image_size, image_size)
+                transforms = [
+                    Resize(image_size, interpolation=interpolation_mode),
                 ]
             else:
-                # resize shortest edge to matching target dim for non-square target
-                transforms = [ResizeKeepRatio(image_size)]
-            transforms += [CenterCrop(image_size)]
+                assert resize_mode == 'shortest'
+                if not isinstance(image_size, (tuple, list)):
+                    image_size = (image_size, image_size)
+                if image_size[0] == image_size[1]:
+                    # simple case, use torchvision built-in Resize w/ shortest edge mode (scalar size arg)
+                    transforms = [
+                        Resize(image_size[0], interpolation=interpolation_mode)
+                    ]
+                else:
+                    # resize shortest edge to matching target dim for non-square target
+                    transforms = [ResizeKeepRatio(image_size)]
+                transforms += [CenterCrop(image_size)]
 
-        transforms.extend([
-            _convert_to_rgb,
-            ToTensor(),
-            normalize,
-        ])
-        return Compose(transforms)
+            transforms.extend([
+                _convert_to_rgb,
+                ToTensor(),
+                normalize,
+            ])
+
+            return Compose(transforms)
 
 
 def image_transform_v2(
@@ -403,5 +448,6 @@ def image_transform_v2(
         interpolation=cfg.interpolation,
         resize_mode=cfg.resize_mode,
         fill_color=cfg.fill_color,
+        use_timm=cfg.use_timm,
         aug_cfg=aug_cfg,
     )

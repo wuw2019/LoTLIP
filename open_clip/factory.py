@@ -12,7 +12,7 @@ import torch
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .convert import convert_state_dict
 from .model import CLIP, CustomTextCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
-    resize_pos_embed, get_cast_dtype, resize_text_pos_embed, set_model_preprocess_cfg
+    resize_pos_embed, get_cast_dtype, resize_text_pos_embed, set_model_preprocess_cfg, resize_vocab_token_embed
 from .coca_model import CoCa
 from .loss import ClipLoss, DistillClipLoss, CoCaLoss, SigLipLoss
 from .openai import load_openai_model
@@ -84,8 +84,10 @@ def _get_hf_config(model_id, cache_dir=None):
 def get_tokenizer(
         model_name: str = '',
         context_length: Optional[int] = None,
+        cache_dir: str = '',
         **kwargs,
 ):
+    kwargs['cache_dir'] = cache_dir
     if model_name.startswith(HF_HUB_PREFIX):
         model_name = model_name[len(HF_HUB_PREFIX):]
         try:
@@ -110,15 +112,19 @@ def get_tokenizer(
     if context_length is None:
         context_length = text_config.get('context_length', DEFAULT_CONTEXT_LENGTH)
 
+    num_corner_token = text_config['num_corner_token'] if 'num_corner_token' in text_config else 0
+
     if 'hf_tokenizer_name' in text_config:
         tokenizer = HFTokenizer(
             text_config['hf_tokenizer_name'],
             context_length=context_length,
+            num_corner_token = num_corner_token,
             **tokenizer_kwargs,
         )
     else:
         tokenizer = SimpleTokenizer(
             context_length=context_length,
+            num_corner_token = num_corner_token,
             **tokenizer_kwargs,
         )
 
@@ -140,40 +146,28 @@ def load_state_dict(checkpoint_path: str, map_location='cpu'):
     return state_dict
 
 
-def load_checkpoint(
-        model: Union[CLIP, CustomTextCLIP],
-        checkpoint_path: str,
-        strict: bool = True,
-):
+def load_checkpoint(model, checkpoint_path, strict=False):
     if Path(checkpoint_path).suffix in ('.npz', '.npy'):
-        # Separate path loading numpy big_vision (SigLIP) weights
-        from open_clip.convert import load_big_vision_weights
+        from .big_vision import load_big_vision_weights
         load_big_vision_weights(model, checkpoint_path)
         return {}
 
     state_dict = load_state_dict(checkpoint_path)
-
-    # Detect & convert 3rd party state_dicts -> open_clip
-    state_dict = convert_state_dict(model, state_dict)
-
-    # Detect old format and make compatible with new format
+    # detect old format and make compatible with new format
     if 'positional_embedding' in state_dict and not hasattr(model, 'positional_embedding'):
         state_dict = convert_to_custom_text_state_dict(state_dict)
-
     # If loading a non-SigLIP model for SigLIP training. See https://github.com/mlfoundations/open_clip/issues/712
     if 'logit_bias' not in state_dict and model.logit_bias is not None:
         state_dict["logit_bias"] = torch.zeros_like(state_dict["logit_scale"])
-
     # Certain text transformers no longer expect position_ids after transformers==4.31
     position_id_key = 'text.transformer.embeddings.position_ids'
     if position_id_key in state_dict and not hasattr(model, position_id_key):
         del state_dict[position_id_key]
-
     resize_pos_embed(state_dict, model)
     resize_text_pos_embed(state_dict, model)
-
-    # Finally, load the massaged state_dict into model
+    resize_vocab_token_embed(state_dict, model)
     incompatible_keys = model.load_state_dict(state_dict, strict=strict)
+    
     return incompatible_keys
 
 
@@ -242,6 +236,7 @@ def create_model(
             model_cfg["vision_cfg"]["image_size"] = force_image_size
 
         is_timm_model = 'timm_model_name' in model_cfg.get('vision_cfg', {})
+        preprocess_cfg = merge_preprocess_dict(preprocess_cfg, {'use_timm': is_timm_model})
         if pretrained_image:
             if is_timm_model:
                 # pretrained weight loading for timm models set via vision_cfg
@@ -256,7 +251,7 @@ def create_model(
             # load pretrained weights for HF text model IFF no CLIP weights being loaded
             model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf and not pretrained
         custom_text = model_cfg.pop('custom_text', False) or force_custom_text or is_hf_model
-
+        model_cfg['cache_dir'] = cache_dir
         model_cfg = dict(model_cfg, **model_kwargs)  # merge cfg dict w/ kwargs (kwargs overrides cfg)
         if custom_text:
             if "multimodal_cfg" in model_cfg:
@@ -354,7 +349,7 @@ def create_loss(args):
             cache_labels=True,
             rank=args.rank,
             world_size=args.world_size,
-            use_horovod=args.horovod,
+            use_horovod=args.horovod
         )
     elif args.siglip:
         assert not args.horovod, "Horovod not currently supported for SigLip"
@@ -369,6 +364,9 @@ def create_loss(args):
         rank=args.rank,
         world_size=args.world_size,
         use_horovod=args.horovod,
+        use_declip_loss=args.use_declip_loss,
+        clip_lossweight=args.clip_lossweight,
+        declip_lossweight=args.declip_lossweight
     )
 
 

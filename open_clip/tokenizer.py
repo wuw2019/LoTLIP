@@ -137,7 +137,9 @@ class SimpleTokenizer(object):
             additional_special_tokens: Optional[List[str]] = None,
             context_length: Optional[int] = DEFAULT_CONTEXT_LENGTH,
             clean: str = 'lower',
-            reduction_mask: str = ''
+            cache_dir: str = '',
+            reduction_mask: str = '',
+            num_corner_token: int = 0,
     ):
         self.byte_encoder = bytes_to_unicode()
         self.byte_decoder = {v: k for k, v in self.byte_encoder.items()}
@@ -148,6 +150,11 @@ class SimpleTokenizer(object):
         vocab = vocab + [v+'</w>' for v in vocab]
         for merge in merges:
             vocab.append(''.join(merge))
+
+        if num_corner_token>0:
+            extra_corner_tokens = ['<Corner'+str(k)+'>' for k in range(num_corner_token)]
+            vocab.extend(extra_corner_tokens)
+            
         special_tokens = ['<start_of_text>', '<end_of_text>']
         if additional_special_tokens:
             special_tokens += additional_special_tokens
@@ -168,6 +175,14 @@ class SimpleTokenizer(object):
         self.context_length = context_length
         self.clean_fn = get_clean_fn(clean)
         self.reduction_fn = get_reduction_mask_fn(reduction_mask) if reduction_mask else None
+
+        if num_corner_token>0:
+            added_corner_tokens = []
+            for k in range(num_corner_token):
+                added_corner_tokens.append(self.encoder['<Corner'+str(k)+'>'])
+            self.added_corner_tokens = added_corner_tokens
+        self.num_corner_token = num_corner_token
+
 
     def bpe(self, token):
         if token in self.cache:
@@ -253,13 +268,14 @@ class SimpleTokenizer(object):
                 encode_fn=self.encode,
             )
 
-        all_tokens = [[self.sot_token_id] + self.encode(text) + [self.eot_token_id] for text in texts]
+        end_tokens = [self.eot_token_id] if self.num_corner_token<=0 else self.added_corner_tokens+[self.eot_token_id]
+        all_tokens = [[self.sot_token_id] + self.encode(text) + end_tokens for text in texts]
         result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
 
         for i, tokens in enumerate(all_tokens):
             if len(tokens) > context_length:
                 tokens = tokens[:context_length]  # Truncate
-                tokens[-1] = self.eot_token_id
+                tokens[-len(end_tokens):] = end_tokens
             result[i, :len(tokens)] = torch.tensor(tokens)
 
         return result
@@ -409,19 +425,30 @@ class HFTokenizer:
             context_length: Optional[int] = DEFAULT_CONTEXT_LENGTH,
             clean: str = 'whitespace',
             strip_sep_token: bool = False,
-            language: Optional[str] = None,
-            **kwargs
+            cache_dir: str = '',
+            num_corner_token: int = 0,
     ):
         from transformers import AutoTokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, **kwargs)
-        set_lang_fn = getattr(self.tokenizer, 'set_src_lang_special_tokens', None)
-        if callable(set_lang_fn):
-            self.set_lang_fn = set_lang_fn
-        if language is not None:
-            self.set_language(language)
+        print(cache_dir,tokenizer_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(os.path.join(cache_dir, tokenizer_name))
+        self.tokenizer_name = tokenizer_name
+
         self.context_length = context_length
         self.clean_fn = get_clean_fn(clean)
         self.strip_sep_token = strip_sep_token
+
+        self.cls_token = self.tokenizer._convert_id_to_token(self.tokenizer.cls_token_id)
+        if num_corner_token>0:
+            added_corner_tokens = []
+            for k in range(num_corner_token):
+                self.tokenizer.add_tokens(['[Corner'+str(k)+']'], special_tokens=True)
+                added_corner_tokens.append('[Corner'+str(k)+']')
+            added_corner_tokens = ' '.join(added_corner_tokens)
+            self.added_corner_tokens = added_corner_tokens
+
+
+        self.sep_token = self.tokenizer._convert_id_to_token(self.tokenizer.sep_token_id)
+        self.num_corner_token = num_corner_token
 
     def save_pretrained(self, dest):
         self.tokenizer.save_pretrained(dest)
@@ -431,12 +458,20 @@ class HFTokenizer:
         # adding lower (for case-sensitive tokenizers) will make it more robust but less sensitive to nuance
         if isinstance(texts, str):
             texts = [texts]
-
+        
         context_length = context_length or self.context_length
         assert context_length, 'Please set a valid context length in class init or call.'
 
+        
+        for i, text in enumerate(texts):
+            if 'bert' in self.tokenizer_name:
+                text = self.sep_token.join(text.split('. '))
+            if self.num_corner_token>0:
+                text = ''.join([self.added_corner_tokens] + [text])
+            texts[i] = text
+
         texts = [self.clean_fn(text) for text in texts]
-        input_ids = self.tokenizer.batch_encode_plus(
+        input_ids = self.tokenizer(
             texts,
             return_tensors='pt',
             max_length=context_length,
@@ -452,12 +487,6 @@ class HFTokenizer:
             )
 
         return input_ids
-    
-    def set_language(self, src_lang):
-        if hasattr(self, 'set_lang_fn'):
-            self.set_lang_fn(src_lang)
-        else:
-            warnings.warn('Cannot set language for the tokenizer.')
 
 
 class SigLipTokenizer:

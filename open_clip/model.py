@@ -47,6 +47,7 @@ class CLIPVisionCfg:
 
     timm_model_name: Optional[str] = None  # a valid model name overrides layers, width, patch_size
     timm_model_pretrained: bool = False  # use (imagenet) pretrained weights for named model
+    checkpoint_path: str = '' # checkpoint_path
     timm_pool: str = 'avg'  # feature pooling for timm model ('abs_attn', 'rot_attn', 'avg', '')
     timm_proj: str = 'linear'  # linear projection for timm model output ('linear', 'mlp', '')
     timm_proj_bias: bool = False  # enable bias final projection
@@ -58,6 +59,9 @@ class CLIPVisionCfg:
 class CLIPTextCfg:
     context_length: int = 77
     vocab_size: int = 49408
+    num_corner_token: Optional[int] = 0
+    checkpoint_path: str = '' # checkpoint_path
+
     hf_tokenizer_name: Optional[str] = None
     tokenizer_kwargs: Optional[dict] = None
 
@@ -105,7 +109,8 @@ def _build_vision_tower(
         embed_dim: int,
         vision_cfg: CLIPVisionCfg,
         quick_gelu: bool = False,
-        cast_dtype: Optional[torch.dtype] = None
+        cast_dtype: Optional[torch.dtype] = None,
+        cache_dir: str = None
 ):
     if isinstance(vision_cfg, dict):
         vision_cfg = CLIPVisionCfg(**vision_cfg)
@@ -119,6 +124,7 @@ def _build_vision_tower(
         visual = TimmModel(
             vision_cfg.timm_model_name,
             pretrained=vision_cfg.timm_model_pretrained,
+            checkpoint_path=vision_cfg.checkpoint_path,
             pool=vision_cfg.timm_pool,
             proj=vision_cfg.timm_proj,
             proj_bias=vision_cfg.timm_proj_bias,
@@ -127,6 +133,7 @@ def _build_vision_tower(
             patch_drop=vision_cfg.patch_dropout if vision_cfg.patch_dropout > 0 else None,
             embed_dim=embed_dim,
             image_size=vision_cfg.image_size,
+            cache_dir=cache_dir
         )
     elif isinstance(vision_cfg.layers, (tuple, list)):
         vision_heads = vision_cfg.width * 32 // vision_cfg.head_width
@@ -175,6 +182,7 @@ def _build_text_tower(
         text_cfg: CLIPTextCfg,
         quick_gelu: bool = False,
         cast_dtype: Optional[torch.dtype] = None,
+        cache_dir: str = None
 ):
     if isinstance(text_cfg, dict):
         text_cfg = CLIPTextCfg(**text_cfg)
@@ -187,6 +195,8 @@ def _build_text_tower(
             pooler_type=text_cfg.hf_pooler_type,
             pretrained=text_cfg.hf_model_pretrained,
             output_tokens=text_cfg.output_tokens,
+            num_corner_token=text_cfg.num_corner_token,
+            cache_dir=cache_dir
         )
     else:
         act_layer = QuickGELU if quick_gelu else nn.GELU
@@ -213,7 +223,9 @@ def _build_text_tower(
             output_tokens=text_cfg.output_tokens,
             act_layer=act_layer,
             norm_layer=norm_layer,
+            num_corner_token=text_cfg.num_corner_token,
         )
+        
     return text
 
 
@@ -230,6 +242,7 @@ class CLIP(nn.Module):
             init_logit_bias: Optional[float] = None,
             cast_dtype: Optional[torch.dtype] = None,
             output_dict: bool = False,
+            cache_dir: str = None
     ):
         super().__init__()
         self.output_dict = output_dict
@@ -240,12 +253,16 @@ class CLIP(nn.Module):
         self.transformer = text.transformer
         self.context_length = text.context_length
         self.vocab_size = text.vocab_size
+        self.output_dim = text.output_dim
         self.token_embedding = text.token_embedding
         self.positional_embedding = text.positional_embedding
         self.ln_final = text.ln_final
         self.text_projection = text.text_projection
         self.text_pool_type = text.pool_type
         self.register_buffer('attn_mask', text.attn_mask, persistent=False)
+
+        self.num_corner_token = text.num_corner_token
+        self.build_attn_mask = text.build_attn_mask
 
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
@@ -263,56 +280,94 @@ class CLIP(nn.Module):
         self.transformer.grad_checkpointing = enable
 
     def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
+        out = self.visual(image)
+        if len(out)==2:
+            features, _ = out
+            if normalize:
+                return F.normalize(features, dim=-1)
+            else:
+                return features
+        else:
+            features = out
+            if normalize:
+                return F.normalize(features, dim=-1)
+            else:
+                return features
 
     def encode_text(self, text, normalize: bool = False):
         cast_dtype = self.transformer.get_cast_dtype()
 
-        x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-
+        bs = text.shape[0]
+        multi_texts = False
+        if len(text.shape)==3:
+            multi_texts = True
+            text_input = text.view(-1, text.shape[-1]).contiguous()
+        else:
+            text_input = text
+        x = self.token_embedding(text_input).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        attn_mask = self.build_attn_mask(self.attn_mask, text_input)
         x = x + self.positional_embedding.to(cast_dtype)
-        x = self.transformer(x, attn_mask=self.attn_mask)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x, attn_mask=attn_mask)
+        x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
-        x, _ = text_global_pool(x, text, self.text_pool_type)
+        x, _ = text_global_pool(x, text_input, self.text_pool_type, num_corner_token=self.num_corner_token)
+
         if self.text_projection is not None:
             if isinstance(self.text_projection, nn.Linear):
                 x = self.text_projection(x)
             else:
                 x = x @ self.text_projection
 
+        if self.num_corner_token>0:
+            if multi_texts:
+                cls_token_embed = x.reshape(bs, text.shape[1], self.num_corner_token+1, x.shape[-1])
+                # use first cls toke for raw caption
+                raw_caption_feat = cls_token_embed[:,0,0].view(text.shape[0], 1, x.shape[-1])
+                long_caption_feat = cls_token_embed[:,1:].view(text.shape[0], -1,x.shape[-1])
+                x = torch.cat([raw_caption_feat,long_caption_feat],dim=1)
+            else:
+                cls_token_embed = x.reshape(bs, self.num_corner_token+1, x.shape[-1])
+                x = cls_token_embed[:,0]
+            
+        elif multi_texts:
+            x = x.view(bs, -1, self.text.output_dim).contiguous()
+
         return F.normalize(x, dim=-1) if normalize else x
 
-    def get_logits(self, image, text):
-        image_features = self.encode_image(image, normalize=True)
-        text_features = self.encode_text(text, normalize=True)
-        image_logits = self.logit_scale.exp() * image_features @ text_features.T
-        if self.logit_bias is not None:
-            image_logits += self.logit_bias
-        text_logits = image_logits.T
-        return image_logits, text_logits
 
     def forward(
             self,
             image: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
     ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        
+        if image is not None:
+            image_features = self.encode_image(image, normalize=True)
+        else:
+            image_features = None
 
+        if  text is not None:
+            text_features = self.encode_text(text, normalize=True)
+        else:
+            text_features = None
+        
         if self.output_dict:
             out_dict = {
                 "image_features": image_features,
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp()
             }
+
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
             return out_dict
 
         if self.logit_bias is not None:
             return image_features, text_features, self.logit_scale.exp(), self.logit_bias
+
         return image_features, text_features, self.logit_scale.exp()
+
 
 
 class CustomTextCLIP(nn.Module):
@@ -328,18 +383,24 @@ class CustomTextCLIP(nn.Module):
             init_logit_bias: Optional[float] = None,
             cast_dtype: Optional[torch.dtype] = None,
             output_dict: bool = False,
+            cache_dir: str = None
     ):
         super().__init__()
         self.output_dict = output_dict
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-        self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
+        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype, cache_dir)
+        self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype, cache_dir)
         self.context_length = self.text.context_length
         self.vocab_size = self.text.vocab_size
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
+        self.use_finegrained_loss=False
+        if self.use_finegrained_loss:
+            self.logit_scale_local = nn.Parameter(torch.ones([]) * init_logit_scale)
         if init_logit_bias is not None:
             self.logit_bias = nn.Parameter(torch.ones([]) * init_logit_bias)
         else:
             self.logit_bias = None
+
+        self.num_corner_token = self.text.num_corner_token
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
@@ -354,36 +415,71 @@ class CustomTextCLIP(nn.Module):
         self.text.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
-        return F.normalize(features, dim=-1) if normalize else features
+        out = self.visual(image)
+        if len(out)==2:
+            features, _ = out
+            if normalize:
+                return F.normalize(features, dim=-1)
+            else:
+                return features
+        else:
+            features = out
+            if normalize:
+                return F.normalize(features, dim=-1)
+            else:
+                return features
 
     def encode_text(self, text, normalize: bool = False):
-        features = self.text(text)
-        return F.normalize(features, dim=-1) if normalize else features
+        bs = text.shape[0]
+        multi_texts = False
+        if len(text.shape)==3:
+            multi_texts = True
+            features = self.text(text.view(-1, text.shape[-1]).contiguous())
+        else:
+            features = self.text(text)
+        
+        if self.num_corner_token>0:
+            if multi_texts:
+                cls_token_embed = features.reshape(bs, text.shape[1], self.text.num_corner_token+1, features.shape[-1])
+                # use first cls toke for raw caption
+                raw_caption_feat = cls_token_embed[:,0,0].view(text.shape[0], 1, features.shape[-1])
+                long_caption_feat = cls_token_embed[:,1:].view(text.shape[0], -1,features.shape[-1])
+                features = torch.cat([raw_caption_feat,long_caption_feat],dim=1)
+            else:
+                cls_token_embed = features.reshape(bs, self.text.num_corner_token+1, features.shape[-1])
+                features = cls_token_embed[:,0]
+            
+        elif multi_texts:
+            features = features.view(bs, -1, self.text.output_dim).contiguous()
 
-    def get_logits(self, image, text):
-        image_features = self.encode_image(image, normalize=True)
-        text_features = self.encode_text(text, normalize=True)
-        image_logits = self.logit_scale.exp() * image_features @ text_features.T
-        if self.logit_bias is not None:
-            image_logits += self.logit_bias
-        text_logits = image_logits.T
-        return image_logits, text_logits
+        return F.normalize(features, dim=-1) if normalize else features
 
     def forward(
             self,
             image: Optional[torch.Tensor] = None,
-            text: Optional[torch.Tensor] = None,
+            text: Optional[torch.Tensor] = None
     ):
-        image_features = self.encode_image(image, normalize=True) if image is not None else None
-        text_features = self.encode_text(text, normalize=True) if text is not None else None
+        
+        if image is not None:
+            bs = image.shape[0]
+            image_features = self.encode_image(image, normalize=True)  
+        else:
+            image_features = None
+
+        if  text is not None:
+            text_features = self.encode_text(text, normalize=True)
+        else:
+            text_features = None
+            
 
         if self.output_dict:
+            
             out_dict = {
-                "image_features": image_features,
+                "image_features": image_features, 
                 "text_features": text_features,
                 "logit_scale": self.logit_scale.exp()
             }
+
             if self.logit_bias is not None:
                 out_dict['logit_bias'] = self.logit_bias
             return out_dict
@@ -585,6 +681,23 @@ def resize_text_pos_embed(state_dict, model, interpolation: str = 'linear', anti
 
     state_dict['positional_embedding'] = new_pos_embed
 
+def resize_vocab_token_embed(state_dict, model):
+    if 'text.transformer.embeddings.word_embeddings.weight' in state_dict:
+        key = 'text.transformer.embeddings.word_embeddings.weight'
+        model_token_embed = model.text.transformer.embeddings.word_embeddings.weight
+    elif 'token_embedding.weight' in state_dict:
+        key = 'token_embedding.weight'
+        model_token_embed = model.token_embedding.weight
+
+    old_token_embed = state_dict.get(key)
+    old_token_num = old_token_embed.shape[0]
+    
+    if model_token_embed.shape[0] != old_token_num:
+        add_token_embed = model_token_embed[old_token_num:]
+        add_token_embed = add_token_embed.to(old_token_embed.device,dtype=old_token_embed.dtype)
+        new_token_embed = torch.cat([old_token_embed,add_token_embed], dim=0)
+        state_dict[key] = new_token_embed
+
 
 def get_model_preprocess_cfg(model):
     module = getattr(model, 'visual', model)
@@ -620,3 +733,5 @@ def get_model_tokenize_cfg(model):
     if vocab_size is not None:
         cfg['vocab_size'] = vocab_size
     return cfg
+
+

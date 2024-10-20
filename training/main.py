@@ -220,6 +220,9 @@ def main(args):
     if args.siglip:
         model_kwargs['init_logit_scale'] = np.log(10)  # different from CLIP
         model_kwargs['init_logit_bias'] = -10
+
+    model_kwargs['cache_dir'] = args.cache_dir
+
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
         args.pretrained,
@@ -353,7 +356,9 @@ def main(args):
             logging.info(f"=> loaded checkpoint '{args.resume}' (epoch {start_epoch})")
 
     # initialize datasets
-    tokenizer = get_tokenizer(args.model)
+    tokenizer = get_tokenizer(args.model,
+                              cache_dir=args.cache_dir,
+                              )
     data = get_data(
         args,
         (preprocess_train, preprocess_val),

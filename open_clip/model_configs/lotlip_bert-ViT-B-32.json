@@ -1,0 +1,18 @@
+{
+    "embed_dim": 768,
+    "vision_cfg": {
+        "timm_model_name": "vit_base_patch32_224.augreg_in21k",
+        "timm_model_pretrained": false,
+        "checkpoint_path": "pytorch_model.bin",
+        "timm_pool": "token",
+        "timm_proj": "none"
+    },
+    "text_cfg": {
+        "context_length": 128,
+        "hf_model_name": "bert-base-uncased",
+        "hf_tokenizer_name": "bert-base-uncased",
+        "hf_proj_type": "linear",
+        "hf_pooler_type": "cls_pooler",
+        "num_corner_token": 2
+    }
+}

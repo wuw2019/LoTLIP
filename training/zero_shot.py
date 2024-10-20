@@ -61,12 +61,12 @@ def run_long_retrieval(model, dataloader, args):
         text_features = torch.cat(text_features, dim=0)
         
         t2i_similarity = text_features@image_features.t() 
-        _, preds = t2i_similarity.max(dim=0)
+        _, preds = t2i_similarity.max(dim=-1)
         pred_true = torch.sum(preds==torch.arange(text_features.shape[0]).to(args.device))
         t2i_acc = float(pred_true/text_features.shape[0])
 
         i2t_similarity = t2i_similarity.t() 
-        _, preds = i2t_similarity.max(dim=0)
+        _, preds = i2t_similarity.max(dim=-1)
         pred_true = torch.sum(preds==torch.arange(image_features.shape[0]).to(args.device))
         i2t_acc = float(pred_true/image_features.shape[0])
 
@@ -103,16 +103,16 @@ def zero_shot_eval(model, data, epoch, args, tokenizer=None):
             )
 
         logging.info('Using classifier')
-    if 'imagenet-val' in data:
-        top1, top5 = run(model, classifier, data['imagenet-val'].dataloader, args)
-        results['imagenet-zeroshot-val-top1'] = top1
-        results['imagenet-zeroshot-val-top5'] = top5
-    if 'imagenet-v2' in data:
-        top1, top5 = run(model, classifier, data['imagenet-v2'].dataloader, args)
-        results['imagenetv2-zeroshot-val-top1'] = top1
-        results['imagenetv2-zeroshot-val-top5'] = top5
+        if 'imagenet-val' in data:
+            top1, top5 = run(model, classifier, data['imagenet-val'].dataloader, args)
+            results['imagenet-zeroshot-val-top1'] = top1
+            results['imagenet-zeroshot-val-top5'] = top5
+        if 'imagenet-v2' in data:
+            top1, top5 = run(model, classifier, data['imagenet-v2'].dataloader, args)
+            results['imagenetv2-zeroshot-val-top1'] = top1
+            results['imagenetv2-zeroshot-val-top5'] = top5
 
-    logging.info('Finished zero-shot imagenet.')
+        logging.info('Finished zero-shot imagenet.')
 
     if 'share4v-retrieval' in data:
         logging.info('Starting zero-shot share4v retrieval.')
@@ -120,23 +120,23 @@ def zero_shot_eval(model, data, epoch, args, tokenizer=None):
             if 'share4v-retrieval' in key:
                 num_share4v_val_data = data[key].dataloader.dataset.total_len
                 t2i_acc, i2t_acc = run_long_retrieval(model, data[key].dataloader, args)
-                results['share4v-retrieval-'+str(num_share4v_val_data)+'-t2i-top1'] = t2i_acc
                 results['share4v-retrieval-'+str(num_share4v_val_data)+'-i2t-top1'] = i2t_acc
+                results['share4v-retrieval-'+str(num_share4v_val_data)+'-t2i-top1'] = t2i_acc
         logging.info('Finished zero-shot share4v retrieval.')
 
                 
     if 'dci-retrieval' in data:
         logging.info('Starting zero-shot dci retrieval.')
         t2i_acc, i2t_acc = run_long_retrieval(model, data['dci-retrieval'].dataloader, args)
-        results['dci-retrieval-t2i-top1'] = t2i_acc
         results['dci-retrieval-i2t-top1'] = i2t_acc
+        results['dci-retrieval-t2i-top1'] = t2i_acc
         logging.info('Finished zero-shot dci retrieval.')
 
     if 'iiw-retrieval' in data:
         logging.info('Starting zero-shot iiw retrieval.')
         t2i_acc, i2t_acc = run_long_retrieval(model, data['iiw-retrieval'].dataloader, args)
-        results['iiw-retrieval-t2i-top1'] = t2i_acc
         results['iiw-retrieval-i2t-top1'] = i2t_acc
+        results['iiw-retrieval-t2i-top1'] = t2i_acc
 
         logging.info('Finished zero-shot iiw retrieval.')
 
