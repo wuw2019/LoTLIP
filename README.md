@@ -38,7 +38,7 @@ make install-test
 ### Data Preparation
 Preparing Datasets for long text-image retrieval following [EVAL_DATASETS.md](EVAL_DATASETS.md)
 
-## 💾 Pre-trained Weights Preparation
+### Pre-trained Weights Preparation
 Please download pre-trained weights of [BERT](https://huggingface.co/google-bert/bert-base-uncased), [ViT-B-16-in21k](https://huggingface.co/timm/vit_base_patch16_224.augreg_in21k), and [ViT-B-32-in21k](https://huggingface.co/timm/vit_base_patch32_224.augreg_in21k) to cache-dir.
 
 ```
