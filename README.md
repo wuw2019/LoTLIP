@@ -89,7 +89,7 @@ python -m training.main \
 | [CLIP-ViT-B-16](https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt) |  400M | 45.45 | 43.01 | 88.24 |87.58 |60.22|56.16 |
 | [LoTLIP-ViT-B-16](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-16-100M) |  100M | *64.11*| *62.63*| *94.28* | *92.65*| *88.40* | *82.72* |
 
-- <span style="color:blue">[2024/11/13]</span> We upate the evaluation of Long-CLIP and its performance on the long-text-image retrieval tasks. We will update the results in the paper as soon as possible.
+- <span style="color:blue">[2024/11/13]</span> We update the evaluation of Long-CLIP and its performance on the long-text-image retrieval tasks.
 
 ## 🔷 Bibtex
 
