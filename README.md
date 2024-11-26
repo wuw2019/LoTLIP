@@ -3,10 +3,11 @@
  Wei Wu, Kecheng Zheng, Shuailei Ma, Fan Lu, Yuxin Guo, Yifei Zhang, Wei Chen, Qingpei Guo, Yujun Shen, Zheng-Jun Zha<br>
 
 **NeurIPS 2024**
-#### | [Project Page](https://wuw2019.github.io/lot-lip/) | [Paper](https://arxiv.org/pdf/2410.05249) |
+#### | [Project Page](https://wuw2019.github.io/lot-lip/) | [Paper](https://arxiv.org/pdf/2410.05249) | [Long Caption-CC](https://huggingface.co/datasets/qidouxiong619/dreamlip_long_captions) | [Long Caption-LAION](https://huggingface.co/datasets/weiwu-ww/Recap-Long-Laion) | [Long Caption-COYO](https://huggingface.co/datasets/weiwu-ww/Recap-Long-Coyo) |
 
 ## 📬 News
 
+- [2024/11/26] Release long captions of LAION and COYO in huggingface.
 - [2024/10/20] Upload LoTLIP checkpoints and evaluation code for LoTLIP.
 - [2024/10/13] Upload long text-image retrieval evaluation for CLIP.
 - [2024/09/26] 🎉 LoTLIP is accepted by NeurIPS 2024!
