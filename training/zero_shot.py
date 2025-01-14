@@ -140,4 +140,12 @@ def zero_shot_eval(model, data, epoch, args, tokenizer=None):
 
         logging.info('Finished zero-shot iiw retrieval.')
 
+    if 'urban1k-retrieval' in data:
+        logging.info('Starting zero-shot urban1k retrieval.')
+        t2i_acc, i2t_acc = run_long_retrieval(model, data['urban1k-retrieval'].dataloader, args)
+        results['urban1k-retrieval-i2t-top1'] = i2t_acc
+        results['urban1k-retrieval-t2i-top1'] = t2i_acc
+
+        logging.info('Finished zero-shot urban1k retrieval.')
+
     return results

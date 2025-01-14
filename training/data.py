@@ -20,10 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from webdataset.filters import _shuffle
 from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
 
-from dataloaders.share4v import share4v_val_dataset
-from dataloaders.dci_retrieval import dci_retrieval_dataset
-from dataloaders.iiw_retrieval import iiw_retrieval_dataset
-
+from dataloaders import *
 try:
     import horovod.torch as hvd
 except ImportError:
@@ -198,6 +195,21 @@ def get_iiw_retrieval(args, preprocess_fns, tokenizer):
     
     preprocess_train, preprocess_val = preprocess_fns
     dataset = iiw_retrieval_dataset(iiw_data_root=args.iiw_retrieval, transform=preprocess_val, \
+        tokenizer=tokenizer)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=args.workers,
+        sampler=None,
+    )
+
+    return DataInfo(dataloader=dataloader, sampler=None)
+
+def get_urban1k_retrieval(args, preprocess_fns, tokenizer):
+    
+    preprocess_train, preprocess_val = preprocess_fns
+    dataset = urban1k_retrieval_dataset(data_root=args.urban1k_retrieval, transform=preprocess_val, \
         tokenizer=tokenizer)
 
     dataloader = torch.utils.data.DataLoader(
@@ -623,5 +635,8 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
     if args.iiw_retrieval is not None:
         data["iiw-retrieval"] = get_iiw_retrieval(args, preprocess_fns, tokenizer)
+
+    if args.urban1k_retrieval is not None:
+        data["urban1k-retrieval"] = get_urban1k_retrieval(args, preprocess_fns, tokenizer)
 
     return data

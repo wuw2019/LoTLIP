@@ -182,6 +182,12 @@ def parse_args(args):
         help="Path to dci data for conducting zero shot evaluation.",
     )
     parser.add_argument(
+        "--urban1k-retrieval",
+        type=str,
+        default=None,
+        help="Path to dci data for conducting zero shot evaluation.",
+    )
+    parser.add_argument(
         "--logs",
         type=str,
         default="./logs/",

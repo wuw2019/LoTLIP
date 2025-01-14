@@ -441,7 +441,7 @@ def main(args):
         train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist_model, args, tb_writer=writer)
         completed_epoch = epoch + 1
 
-        if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2', 'share4v-retrieval', 'dci-retrieval', 'iiw-retrieval')):
+        if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2', 'share4v-retrieval', 'dci-retrieval', 'iiw-retrieval', 'urban1k-retrieval')):
             evaluate(model, data, completed_epoch, args, tb_writer=writer, tokenizer=tokenizer)
 
         # Saving checkpoints.
