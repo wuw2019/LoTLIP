@@ -44,8 +44,7 @@ class urban1k_retrieval_dataset(data.Dataset):
         caption = self.tokenizer([caption])[0]
 
         image_name = caption_name[:-4] + '.jpg'
-        image = Image.open(self.image_root + image_name)
-        f=open(self.caption_root + caption_name)
-        caption = f.readlines()[0]
+        image = Image.open(os.path.join(self.image_root, image_name))
+        image_tensor = self.preprocess(image)
         
-        return image, caption
+        return image_tensor, caption
