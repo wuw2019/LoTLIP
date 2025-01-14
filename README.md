@@ -7,6 +7,7 @@
 
 ## 📬 News
 
+- [2025/01/14] Add Urban1k for evaluation, following Long-CLIP.
 - [2024/11/26] Release long captions of LAION and COYO in huggingface.
 - [2024/10/20] Upload LoTLIP checkpoints and evaluation code for LoTLIP.
 - [2024/10/13] Upload long text-image retrieval evaluation for CLIP.
@@ -82,13 +83,13 @@ python -m training.main \
 
  ### Evaluation Results
 
-| Model |Pre-training Data Scale   | DCI I2T | DCI T2I| IIW I2T |IIW T2I| SV-10k I2T | SV-10k T2I |
-|  :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
-| [CLIP-ViT-B-32](https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt) |  400M | 43.06 | 40.32 | 86.76 | 84.15 | 58.08 | 51.77|
-| [LoTLIP-ViT-B-32](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-32-100M) |  100M | *59.90* | *56.36* | *93.14*| *91.83* | *83.76* | *78.97*|
-| [Long-CLIP-ViT-B-16](https://github.com/beichenzbc/Long-CLIP) |  400M | 51.68 | 57.28 | 89.61 |93.20 |79.24|77.06 |
-| [CLIP-ViT-B-16](https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt) |  400M | 45.45 | 43.01 | 88.24 |87.58 |60.22|56.16 |
-| [LoTLIP-ViT-B-16](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-16-100M) |  100M | *64.11*| *62.63*| *94.28* | *92.65*| *88.40* | *82.72* |
+| Model |Pre-training Data Scale   | DCI I2T | DCI T2I| IIW I2T |IIW T2I| SV-10k I2T | SV-10k T2I | Urban-1k I2T | Urban-1k T2I |
+|  :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: |:----: | :----: |
+| [CLIP-ViT-B-32](https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt) |  400M | 43.06 | 40.32 | 86.76 | 84.15 | 58.08 | 51.77| 60.90 | 47.00|
+| [LoTLIP-ViT-B-32](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-32-100M) |  100M | *59.90* | *56.36* | *93.14*| *91.83* | *83.76* | *78.97*|*84.10* | *81.80*|
+| [Long-CLIP-ViT-B-16](https://github.com/beichenzbc/Long-CLIP) |  400M | 51.68 | 57.28 | 89.61 |93.20 |79.24|77.06 | 78.90| 79.50 |
+| [CLIP-ViT-B-16](https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt) |  400M | 45.45 | 43.01 | 88.24 |87.58 |60.22|56.16 | 67.10 | 52.9 |
+| [LoTLIP-ViT-B-16](https://huggingface.co/weiwu-ww/LoTLIP-ViT-B-16-100M) |  100M | *64.11*| *62.63*| *94.28* | *92.65*| *88.40* | *82.72* | *88.80* | *84.80*|
 
 - <span style="color:blue">[2024/11/13]</span> We update the evaluation of Long-CLIP and its performance on the long-text-image retrieval tasks.
 
